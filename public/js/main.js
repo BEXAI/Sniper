@@ -285,7 +285,7 @@ function handleEvent(ev, t) {
           if (ev.part === 'head') audio.headshot(); else audio.hitmark();
         }
       }
-      if (ev.hit === myPid) {
+      if (ev.hit !== null && ev.hit === myPid) {
         hud.damageFrom(bearingTo(ev.o[0], ev.o[2]) - (-input.yaw * 180 / Math.PI));
       }
       break;
