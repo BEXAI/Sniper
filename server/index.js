@@ -36,6 +36,7 @@ const statusProvider = () => ({
   storeMode: store.mode,
   persistent: store.persistent,
   season: SEASON,
+  rss: Math.round(process.memoryUsage.rss() / 1048576),
   rooms: manager.status(clock()),
 });
 

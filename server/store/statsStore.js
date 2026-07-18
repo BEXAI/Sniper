@@ -58,7 +58,8 @@ export class MemoryStore {
       .sort((a, b) => b[key] - a[key])
       .slice(0, limit);
     return rows.map((r, i) => ({
-      rank: i + 1, name: r.name, rankName: rankNameFor(r.xp), xp: r.xp,
+      // id feeds the client's Name#ab collision discriminator (2 hex chars, §4.3).
+      rank: i + 1, id: r.pid, name: r.name, rankName: rankNameFor(r.xp), xp: r.xp,
       kills: r.kills, deaths: r.deaths, headshots: r.headshots,
       bestStreak: r.bestStreak, longestKill: r.longestKill, matches: r.matches,
     }));

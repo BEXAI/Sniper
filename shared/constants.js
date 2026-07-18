@@ -81,7 +81,10 @@ export const MAX_SEQ_JUMP = 64;
 export const LIVENESS_TIMEOUT_MS = 10000;
 export const HELLO_TIMEOUT_MS = 5000;
 export const BACKPRESSURE_BYTES = 262144;
-export const MAX_SOCKETS_PER_IP = 4;
+// Env-overridable: the soak runs 4 clients + a half-open peer from one loopback IP.
+export const MAX_SOCKETS_PER_IP = Number(env.MAX_SOCKETS_PER_IP) > 0 ? Number(env.MAX_SOCKETS_PER_IP) : 4;
+// WS join limit per IP (§3.5) — env-overridable for the same loopback reason.
+export const JOIN_RATE_PER_MIN = Number(env.JOIN_RATE_PER_MIN) > 0 ? Number(env.JOIN_RATE_PER_MIN) : 5;
 export const MAX_SOCKETS = 64;
 export const MAX_SPECTATORS_PER_ROOM = 4;
 export const PING_INTERVAL_MS = 2000;

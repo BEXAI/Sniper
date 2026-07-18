@@ -21,7 +21,7 @@ import {
 const TEST_MODE = process.env.TEST_MODE === '1';
 
 export class Room {
-  constructor(id, store, seed, { botFill = true } = {}) {
+  constructor(id, store, seed, { botFill = true, now = 0 } = {}) {
     this.id = id;
     this.store = store;
     this.rng = mulberry32(seed >>> 0);
@@ -35,10 +35,12 @@ export class Room {
     this.botSlot = 0;
     this.pendingRefillAt = 0;
     this.emptySince = 0;             // overflow-room destroy timer (manager reads this)
-    this.now = 0;
+    // Clock initialized at construction: joins land BEFORE the first step() tick,
+    // and welcome/spawn-protection math must never see now=0 (§4.5).
+    this.now = now;
     this.matchState = 'LIVE';
-    this.matchEndsAt = 0;            // set on first step
-    this.started = false;
+    this.matchEndsAt = now > 0 ? now + MATCH_MS : 0;
+    this.started = now > 0;
     this.usedBotNames = new Set();
   }
 
@@ -87,6 +89,9 @@ export class Room {
     if (i < 0) return;
     this.combatants.splice(i, 1);
     if (p.botCtl) p.botCtl.releaseNode();
+    // Return the name to the pool — a later refill reusing it reads exactly like
+    // a human rejoining, and the 24-name pool must never exhaust (§5.3).
+    if (p.isBot) this.usedBotNames.delete(p.name);
     this.pushEvent({ e: 'leave', who: p.id });
     this.rebalanceBots();
   }
@@ -282,7 +287,8 @@ export class Room {
     const humans = this.humans();
     const placed = [...humans].sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
     placed.forEach((p, i) => {
-      if (i < XP_PLACE.length && p.kills > 0) {
+      // §3.3: placement XP is unconditional for the top 3 humans (no kill gate).
+      if (i < XP_PLACE.length) {
         p.xpItems.place = XP_PLACE[i];
         p.matchXp += XP_PLACE[i];
         p.xp += XP_PLACE[i];

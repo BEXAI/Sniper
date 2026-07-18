@@ -28,9 +28,11 @@ export class PgStore extends MemoryStore {
         best_streak INT DEFAULT 0, longest_kill REAL DEFAULT 0, matches INT DEFAULT 0,
         shots_fired INT DEFAULT 0, shots_hit INT DEFAULT 0,
         created_at TIMESTAMPTZ DEFAULT now(), last_seen TIMESTAMPTZ DEFAULT now())`);
-    // Warm the in-memory mirror with the top rows so leaderboards are instant.
+    // Warm the in-memory mirror with the WHOLE table (boot-season scale is small):
+    // getPlayer/upsertPlayer only consult the mirror, and a miss on an existing
+    // player would create a zeroed row and flush it over their real stats.
     const { rows } = await store.pool.query(
-      'SELECT * FROM players ORDER BY xp DESC LIMIT 500');
+      'SELECT * FROM players ORDER BY xp DESC');
     for (const r of rows) {
       store.rows.set(r.pid, {
         pid: r.pid, name: r.name, xp: r.xp, kills: r.kills, deaths: r.deaths,

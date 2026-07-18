@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GLINT — sniper duels</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='none' stroke='%23e8a33d' stroke-width='6'/><line x1='50' y1='2' x2='50' y2='34' stroke='%23e8a33d' stroke-width='6'/><line x1='50' y1='66' x2='50' y2='98' stroke='%23e8a33d' stroke-width='6'/><line x1='2' y1='50' x2='34' y2='50' stroke='%23e8a33d' stroke-width='6'/><line x1='66' y1='50' x2='98' y2='50' stroke='%23e8a33d' stroke-width='6'/></svg>">
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<!-- ===== HUD (DOM overlay; every dynamic string set via textContent only) ===== -->
+<div id="hud" class="hidden">
+  <div id="crosshair"><span class="ch-l"></span><span class="ch-r"></span><span class="ch-t"></span><span class="ch-b"></span></div>
+  <div id="scopeOverlay">
+    <div class="scope-vignette"></div>
+    <div class="scope-hair-h"></div>
+    <div class="scope-hair-v"></div>
+    <div class="scope-mildots"></div>
+  </div>
+  <div id="breathWrap"><div id="breathBar"></div></div>
+  <div id="hitmarker">×</div>
+  <div id="lockPrompt" class="hidden">CLICK TO TAKE AIM</div>
+  <div id="spawnHint" class="hidden">hold RMB to scope — hip fire won't hit past 20 m · SHIFT steadies</div>
+  <div id="damageVignette"></div>
+  <div id="damageWedge"></div>
+  <div id="protectChip" class="hidden">SPAWN PROTECTED</div>
+
+  <div id="topbar">
+    <div id="matchTimer">5:00</div>
+    <div id="compass"><div id="compassStrip"></div></div>
+    <div id="pingChip">-- ms</div>
+  </div>
+
+  <div id="killfeed"></div>
+  <div id="streakToast" class="hidden"></div>
+  <div id="rankToast" class="hidden"></div>
+
+  <div id="bottomLeft">
+    <div id="healthWrap"><div id="healthBar"></div></div>
+    <div id="hpNum">100</div>
+  </div>
+  <div id="bottomRight">
+    <div id="boltArc"><div id="boltFill"></div></div>
+    <div id="ammo">5/5</div>
+    <div id="reloadHint" class="hidden">RELOADING</div>
+  </div>
+
+  <div id="guestChip" class="hidden">Playing as Guest — stats not saved</div>
+
+  <div id="scoreboard" class="hidden">
+    <h3 id="sbTitle">GLINT — The Ravine</h3>
+    <table><thead><tr><th>Player</th><th>K</th><th>D</th><th>Streak</th><th>Ping</th></tr></thead>
+    <tbody id="sbBody"></tbody></table>
+  </div>
+
+  <div id="deathScreen" class="hidden">
+    <div id="deathTitle">YOU WERE DROPPED</div>
+    <div id="deathKiller"></div>
+    <div id="deathRespawn"></div>
+    <div id="deathTip"></div>
+  </div>
+</div>
+
+<!-- ===== Intermission / match end ===== -->
+<div id="intermission" class="overlay hidden">
+  <h2 id="imTitle">ROUND OVER</h2>
+  <div id="imPlace"></div>
+  <table id="imBoard"><thead><tr><th></th><th>Player</th><th>K</th><th>D</th><th>HS</th></tr></thead>
+  <tbody id="imBody"></tbody></table>
+  <div id="imXp"></div>
+  <div id="imRankUp" class="hidden"></div>
+  <div id="imCountdown"></div>
+</div>
+
+<!-- ===== Connection overlays ===== -->
+<div id="connOverlay" class="overlay hidden">
+  <div class="spinner"></div>
+  <div id="connMsg">Waking the range…</div>
+</div>
+
+<!-- ===== Menu ===== -->
+<div id="menu" class="overlay">
+  <h1>GLINT</h1>
+  <p class="tagline">one shot. one glint. long-range sniper duels.</p>
+  <div id="seasonBanner" class="hidden">Boot Season — resets when the server restarts. Everyone can be #1.</div>
+  <div class="menu-row">
+    <input id="nameInput" maxlength="16" placeholder="callsign" autocomplete="off">
+    <button id="playBtn">DEPLOY</button>
+  </div>
+  <div id="nameError" class="hidden"></div>
+  <div class="menu-cols">
+    <div class="menu-panel">
+      <h3>Leaderboard</h3>
+      <table><tbody id="lbBody"></tbody></table>
+      <div id="lbEmpty" class="hidden">No marks on the board yet.</div>
+    </div>
+    <div class="menu-panel">
+      <h3>Settings</h3>
+      <label>Sensitivity <input id="sensSlider" type="range" min="0.2" max="3" step="0.1" value="1"></label>
+      <label>Volume <input id="volSlider" type="range" min="0" max="1" step="0.05" value="0.7"></label>
+      <h3>Controls</h3>
+      <div class="controls-list">
+        <span>WASD move · Space jump</span>
+        <span>RMB scope · LMB fire</span>
+        <span>SHIFT hold breath (scoped)</span>
+        <span>R reload · TAB scoreboard</span>
+      </div>
+      <a id="spectateLink" href="?spectate=1">watch a live match →</a>
+    </div>
+  </div>
+  <div id="menuStatus"></div>
+</div>
+
+<!-- ===== Touch interstitial ===== -->
+<div id="touchGate" class="overlay hidden">
+  <h1>GLINT</h1>
+  <p>GLINT is desktop-only — precision mouse aim is the whole game.</p>
+  <a class="bigbtn" href="?spectate=1">Watch a live match instead</a>
+</div>
+
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

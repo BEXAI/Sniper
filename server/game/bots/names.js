@@ -26,8 +26,9 @@ export const BOT_TIERS = {
   },
 };
 
-// Default room fill: 2 easy, 2 medium, 1 hard, 1 random.
-export const DEFAULT_FILL = ['easy', 'easy', 'medium', 'medium', 'hard', 'random'];
+// Default room fill: deterministic 3 easy / 2 medium / 1 hard — a stranger's first
+// match must never boot with two Hard bots (rubber-banding adjusts later).
+export const DEFAULT_FILL = ['easy', 'easy', 'easy', 'medium', 'medium', 'hard'];
 
 // Plausible rank chevrons for bots (index into RANKS: Marksman..Veteran).
 export const BOT_RANKS = { easy: 1, medium: 2, hard: 3 };

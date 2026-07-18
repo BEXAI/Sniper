@@ -79,7 +79,10 @@ export class Player {
       if (this.alive()) {
         step(this.state, { b, yaw: this.lastYaw, pitch: this.lastPitch }, TICK_DT, MAP);
       }
-      this.guessedSteps++;
+      // Debt capped at the max burst a compliant client can produce (§1.4
+      // accumulator clamp = 0.25 s ≈ 8 inputs): inputs after a long hidden-tab
+      // gap are NEW ticks, not TCP late duplicates — never freeze the whole gap.
+      this.guessedSteps = Math.min(this.guessedSteps + 1, 8);
     } else {
       this.starvedMs = 0;
       let n = Math.min(2, this.queue.length);

@@ -3,7 +3,8 @@
 // rubber-banding, so keep every operation deterministic (no Date, no Math.random).
 import {
   BTN, SPEED, SPEED_SCOPED, AIR_MULT, GRAVITY, JUMP_VEL, STEP_UP,
-  PLAYER_HALF, PLAYER_HEIGHT, BOLT_MS, SCOPE_DROP_MS, MAG_SIZE, RELOAD_MS,
+  PLAYER_HALF, PLAYER_HEIGHT, BOLT_MS, BOLT_TOLERANCE_MS, SCOPE_DROP_MS,
+  MAG_SIZE, RELOAD_MS,
   EXHALE_MS, BREATH_HOLD_S, BREATH_REFILL_SCOPED_S, BREATH_REFILL_UNSCOPED_S,
   ARENA_X, ARENA_Z, ARENA_Y_MIN, ARENA_Y_MAX,
 } from './constants.js';
@@ -80,10 +81,12 @@ export function step(s, input, dt, map) {
   // Auto-reload on empty once the bolt settles.
   if (s.ammo === 0 && s.boltMs === 0 && s.reloadMs === 0) s.reloadMs = RELOAD_MS;
 
-  // --- Fire edge (identical gating on both sides; blocked fires are simply dropped) ---
-  if (input.fire && s.boltMs === 0 && s.reloadMs === 0 && s.ammo > 0) {
+  // --- Fire edge (identical gating on both sides; blocked fires are simply dropped).
+  // A click landing one tick early is honored: the tolerance window is credited back
+  // onto the new bolt so the effective cadence stays exactly BOLT_MS.
+  if (input.fire && s.boltMs <= BOLT_TOLERANCE_MS && s.reloadMs === 0 && s.ammo > 0) {
     s.ammo -= 1;
-    s.boltMs = BOLT_MS;
+    s.boltMs = BOLT_MS + s.boltMs;
     events.fired = true;
   }
 

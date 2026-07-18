@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: glint
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server/index.js
+    healthCheckPath: /api/status
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: SERVER_SECRET
+        generateValue: true
+      # Render terminates TLS at its proxy: per-IP limits must key on the
+      # rightmost X-Forwarded-For entry, not the proxy's own address.
+      - key: TRUST_PROXY
+        value: "1"

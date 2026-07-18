@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { pipeline } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { mintPid, mintToken, verifyToken, validateName } from './identity.js';
 import { SEASON, rankNameFor } from '../store/statsStore.js';
@@ -24,9 +25,26 @@ const MIME = {
 
 const BODY_CAP = 4096;
 
+// Behind Render's proxy req.socket.remoteAddress is the proxy hop, shared by all
+// clients — with TRUST_PROXY set, key per-IP enforcement on the rightmost
+// X-Forwarded-For entry (the one the trusted proxy itself appended).
+const TRUST_PROXY = process.env.TRUST_PROXY === '1';
+export function clientIp(req) {
+  let ip = req.socket.remoteAddress || '?';
+  if (TRUST_PROXY) {
+    const xff = req.headers['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.length) {
+      const last = xff.split(',').pop().trim();
+      if (last) ip = last;
+    }
+  }
+  return ip.replace(/^::ffff:/, '');
+}
+
 // Global /api token bucket: 20 requests / 10 s per IP (plus 5/min for /api/guest).
+// Exported: the WS hub charges its join bucket through the same limiter.
 const buckets = new Map();
-function allow(ip, key, capacity, refillPerMs) {
+export function allow(ip, key, capacity, refillPerMs) {
   const now = Date.now();
   const k = `${ip}:${key}`;
   let b = buckets.get(k);
@@ -99,20 +117,22 @@ async function serveStatic(req, res, url) {
     res.writeHead(200, {
       'Content-Type': mime,
       'Content-Length': stat.size,
-      'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=300',
+      'Cache-Control': url.pathname.startsWith('/vendor/') ? 'public, max-age=86400' : 'no-cache',
     });
     if (req.method === 'HEAD') { res.end(); return; }
-    fs.createReadStream(file).pipe(res);
+    // pipeline (not bare pipe): destroys the read stream when the client aborts
+    // mid-transfer (no fd leak) and swallows read errors instead of crashing.
+    pipeline(fs.createReadStream(file), res, () => {});
   } catch {
     json(res, 404, { error: 'not found' });
   }
 }
 
 export function createApi({ store, manager, statusProvider }) {
-  let lbCache = { key: '', at: 0, body: null };
+  let lbCache = { at: 0, xp: [], kills: [] };
 
   return async function handle(req, res) {
-    const ip = (req.socket.remoteAddress || '?').replace(/^::ffff:/, '');
+    const ip = clientIp(req);
     let url;
     try { url = new URL(req.url, 'http://x'); } catch { json(res, 400, { error: 'bad url' }); return; }
 
@@ -161,21 +181,16 @@ export function createApi({ store, manager, statusProvider }) {
     if (url.pathname === '/api/leaderboard' && req.method === 'GET') {
       const by = url.searchParams.get('by') === 'kills' ? 'kills' : 'xp';
       const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
-      const key = `${by}:${limit}`;
-      // Rebuilt at most every 5 s — a store scan never rides the hot path.
-      if (lbCache.key !== key || Date.now() - lbCache.at > 5000) {
+      // ONE cached build (top 100 per sort), rebuilt at most every 5 s regardless
+      // of by/limit cycling — a store scan never rides the hot path (§3.1).
+      if (Date.now() - lbCache.at > 5000) {
         lbCache = {
-          key,
           at: Date.now(),
-          body: JSON.stringify({
-            persistent: store.persistent,
-            season: SEASON,
-            rows: store.leaderboard(by, limit),
-          }),
+          xp: store.leaderboard('xp', 100),
+          kills: store.leaderboard('kills', 100),
         };
       }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(lbCache.body);
+      json(res, 200, { persistent: store.persistent, season: SEASON, rows: lbCache[by].slice(0, limit) });
       return;
     }
 

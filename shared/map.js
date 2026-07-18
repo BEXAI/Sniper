@@ -149,9 +149,10 @@ wp('nbW', -68, 0, -49); wp('ntW', -53, 6, -46);
 wp('nbE', 68, 0, -49); wp('ntE', 53, 6, -46);
 wp('sbW', -68, 0, 49); wp('stW', -53, 6, 46);
 wp('sbE', 68, 0, 49); wp('stE', 53, 6, 46);
-// Nests
-wp('nnW', -60, 6, -28); wp('nnE', 60, 6, -28);
-wp('nsW', -60, 6, 28); wp('nsE', 60, 6, 28);
+// Nests (nodes sit 1 m BEHIND the wing walls — z +-28 is inside the parapet
+// pocket and east-west transit lines through it wedge on the 1.4 m wings)
+wp('nnW', -60, 6, -30); wp('nnE', 60, 6, -30);
+wp('nsW', -60, 6, 30); wp('nsE', 60, 6, 30);
 // Towers (bottom of tower stairs, platform top)
 wp('tnB', -85, 6, -46.5); wp('tnT', -85, 9, -37);
 wp('tsB', 85, 6, 46.5); wp('tsT', 85, 9, 37);
@@ -160,6 +161,11 @@ wp('bN', 0, 6, -28); wp('bC', 0, 5.6, 0); wp('bS', 0, 6, 28);
 // Canyon floor
 wp('cw', -75, 0, 0); wp('c1', -40, 0, -10); wp('c2', -10, 0, 10);
 wp('c3', 20, 0, -10); wp('c4', 50, 0, 10); wp('ce', 80, 0, 0);
+// Stair heads (on the top step, centered in the 2 m stair lane): the shelf-top
+// nodes sit 3 m inside the shelf, so a straight bottom<->top line drifts off the
+// stair side — route through the head so bots climb the actual steps.
+wp('nhW', -54.4, 6, -48.6); wp('nhE', 54.4, 6, -48.6);
+wp('shW', -54.4, 6, 48.6); wp('shE', 54.4, 6, 48.6);
 
 const EDGES = [
   ['t-80', 't-40'], ['t-40', 't0'], ['t0', 't40'], ['t40', 't80'],
@@ -169,8 +175,8 @@ const EDGES = [
   ['cNW', 'w1'], ['w1', 'w2'], ['w2', 'w3'], ['w3', 'cSW'],
   ['cNE', 'e1'], ['e1', 'e2'], ['e2', 'e3'], ['e3', 'cSE'],
   ['cSW', 'rS-80'], ['rS-80', 'rS0'], ['rS0', 'rS80'], ['rS80', 'cSE'],
-  ['rN-80', 'nbW'], ['nbW', 'ntW'], ['rN80', 'nbE'], ['nbE', 'ntE'],
-  ['rS-80', 'sbW'], ['sbW', 'stW'], ['rS80', 'sbE'], ['sbE', 'stE'],
+  ['rN-80', 'nbW'], ['nbW', 'nhW'], ['nhW', 'ntW'], ['rN80', 'nbE'], ['nbE', 'nhE'], ['nhE', 'ntE'],
+  ['rS-80', 'sbW'], ['sbW', 'shW'], ['shW', 'stW'], ['rS80', 'sbE'], ['sbE', 'shE'], ['shE', 'stE'],
   ['ntW', 'nnW'], ['ntE', 'nnE'], ['ntW', 'ntE'], ['nnW', 'nnE'],
   ['ntW', 'tnB'], ['tnB', 'tnT'],
   ['nnW', 'bN'], ['nnE', 'bN'], ['bN', 'bC'], ['bC', 'bS'],

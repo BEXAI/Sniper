@@ -3,9 +3,10 @@
 // entity removal, leave events, and cap bookkeeping are single-sourced.
 import { validateInput, validateHello, validatePing } from './protocol.js';
 import { verifyToken, validateName } from '../http/identity.js';
+import { allow, clientIp } from '../http/api.js';
 import {
   MAX_MSGS_PER_SEC, MAX_INPUTS_PER_SEC, MAX_VIOLATIONS, HELLO_TIMEOUT_MS,
-  LIVENESS_TIMEOUT_MS, MAX_SOCKETS, MAX_SOCKETS_PER_IP, rankFor,
+  LIVENESS_TIMEOUT_MS, MAX_SOCKETS, MAX_SOCKETS_PER_IP, JOIN_RATE_PER_MIN, rankFor,
 } from '../../shared/constants.js';
 
 const FATAL_CODES = new Set(['NAME_INVALID', 'FULL', 'RATE', 'PROTO']);
@@ -84,10 +85,18 @@ export class ConnectionHub {
   }
 
   accept(ws, req) {
-    const ip = (req.socket.remoteAddress || '?').replace(/^::ffff:/, '');
+    const ip = clientIp(req);
     if (this.conns.size >= MAX_SOCKETS || (this.perIp.get(ip) || 0) >= MAX_SOCKETS_PER_IP) {
       try { ws.send(JSON.stringify({ type: 'error', code: 'FULL', msg: 'server full' })); } catch { /* best effort */ }
       ws.close(4008, 'FULL');
+      return;
+    }
+    // Join limit (§3.5): sequential connect/hello/disconnect churn from one IP is
+    // throttled here — the concurrent cap above never binds on it. RATE, not FULL,
+    // so clients can tell throttling from capacity.
+    if (!allow(ip, 'join', JOIN_RATE_PER_MIN, JOIN_RATE_PER_MIN / 60000)) {
+      try { ws.send(JSON.stringify({ type: 'error', code: 'RATE', msg: 'too many joins' })); } catch { /* best effort */ }
+      ws.close(4008, 'RATE');
       return;
     }
     const conn = new Conn(ws, ip, this);

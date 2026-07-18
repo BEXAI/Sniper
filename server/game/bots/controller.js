@@ -2,7 +2,7 @@
 // humans fill from the network — bots can never do anything a human client couldn't.
 // Thinks at 5 Hz (staggered by slot); emits exactly one input per tick.
 import { WAYPOINTS, BOXES } from '../../../shared/map.js';
-import { BTN, EYE_HEIGHT, TICK_DT } from '../../../shared/constants.js';
+import { BTN, EYE_HEIGHT, TICK_DT, STEP_UP } from '../../../shared/constants.js';
 import { rayVsBoxes, dist3, normalizeAngle } from '../../../shared/math.js';
 import { BOT_TIERS } from './names.js';
 
@@ -43,7 +43,10 @@ export function nearestNode(x, y, z) {
   let best = 0, bestD = Infinity;
   for (let i = 0; i < N; i++) {
     const w = WAYPOINTS[i];
-    const dy = (w.y - y) * 3;                 // weight elevation so we don't match across cliffs
+    // Weight elevation hard so we never match across a cliff/trench lip: a bot on
+    // the trench floor must anchor to a floor node it can walk to, not the rim
+    // node 2 m above its head.
+    const dy = (w.y - y) * 12;
     const d = (w.x - x) ** 2 + dy * dy + (w.z - z) ** 2;
     if (d < bestD) { bestD = d; best = i; }
   }
@@ -85,6 +88,12 @@ export class BotController {
     this.staticSince = 0;
     this.posHistory = [];
     this.stuckEvents = 0;
+    this.escapeTarget = null;                 // stuck recovery steers here directly
+    this.escapeUntil = 0;
+    this.stepNode = -1;                       // committed next hop (see thinkMove)
+    this.stepGoal = -1;
+    this.legBestD = Infinity;                 // leg-progress watchdog
+    this.legStaleThinks = 0;
     this.patrolPhase = this.rng() * Math.PI * 2;
   }
 
@@ -102,6 +111,76 @@ export class BotController {
 
   releaseNode() {
     if (this.claimedNode >= 0) { this.room.nodeOccupancy.delete(this.claimedNode); this.claimedNode = -1; }
+  }
+
+  // A waist-high ray to the target is clear of geometry for its first metres.
+  // Two guards keep "clear" honest about what the BODY can actually walk:
+  // (a) a net climb beyond STEP_UP is never straight-walkable — the rising waist
+  //     ray sneaks over a trench lip the feet can't climb (bots then press into
+  //     the 2 m wall below a road node forever); ramps/stairs are graph edges,
+  //     so committed hops still climb them riser by riser;
+  // (b) the capsule is 0.8 m wide — a zero-width center ray grazes past corners
+  //     (nest wing walls) the body wedges on, so both shoulder lines must be
+  //     clear too.
+  clearWalk(sx, sy, sz, tx, ty, tz) {
+    const dx = tx - sx, dy = ty - sy, dz = tz - sz;
+    if (dy > STEP_UP) return false;
+    const full = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const len = Math.min(24, full);
+    if (len < 1e-3) return true;
+    const inv = 1 / full;
+    const dir = [dx * inv, dy * inv, dz * inv];
+    const h = Math.hypot(dx, dz) || 1;
+    const px = (-dz / h) * 0.35, pz = (dx / h) * 0.35;
+    return rayVsBoxes([sx, sy + 0.9, sz], dir, BOXES, len) >= len
+      && rayVsBoxes([sx + px, sy + 0.9, sz + pz], dir, BOXES, len) >= len
+      && rayVsBoxes([sx - px, sy + 0.9, sz - pz], dir, BOXES, len) >= len;
+  }
+
+  // Nearest node we can walk STRAIGHT at — the plain nearest node is routinely
+  // on the far side of a staircase or above a trench lip after falls/detours.
+  anchorNode(sx, sy, sz, fallback) {
+    let best = -1, bestD = Infinity;
+    for (let i = 0; i < N; i++) {
+      const w = WAYPOINTS[i];
+      const dy = (w.y - sy) * 12;
+      const d = (w.x - sx) ** 2 + dy * dy + (w.z - sz) ** 2;
+      if (d < bestD && this.clearWalk(sx, sy, sz, w.x, w.y, w.z)) { bestD = d; best = i; }
+    }
+    return best >= 0 ? best : fallback;
+  }
+
+  // Wedged against geometry: walk somewhere PROVABLY open for a beat, then
+  // re-route. Prefer an adjacent graph node with a clear waist-high line;
+  // pockets whose graph exits are all walled off fall back to any open compass
+  // heading (this is what actually frees a bot cornered between two faces).
+  startEscape(now) {
+    const s = this.p.state;
+    const cur = nearestNode(s.x, s.y, s.z);
+    const adj = [...WAYPOINTS[cur].adj, cur];
+    for (let i = adj.length - 1; i > 0; i--) {
+      const j = Math.floor(this.rng() * (i + 1)) % (i + 1);
+      [adj[i], adj[j]] = [adj[j], adj[i]];
+    }
+    for (const n of adj) {
+      const w = WAYPOINTS[n];
+      if (this.clearWalk(s.x, s.y, s.z, w.x, w.y, w.z)) {
+        this.goal = n === cur ? this.goal : n;
+        this.escapeTarget = { x: w.x, y: w.y, z: w.z };
+        this.escapeUntil = now + 3000;
+        return;
+      }
+    }
+    const base = this.rng() * Math.PI * 2;
+    for (let k = 0; k < 8; k++) {
+      const a = base + k * Math.PI / 4;
+      const tx = s.x + Math.cos(a) * 8, tz = s.z + Math.sin(a) * 8;
+      if (this.clearWalk(s.x, s.y, s.z, tx, s.y, tz)) {
+        this.escapeTarget = { x: tx, y: s.y, z: tz };
+        this.escapeUntil = now + 2000;
+        return;
+      }
+    }
   }
 
   onDamaged() {
@@ -175,25 +254,40 @@ export class BotController {
     const s = this.p.state;
     const now = this.room.now;
 
-    // Stuck recovery: < 0.5 m of movement across 3 s of thinks -> repath.
-    this.posHistory.push({ x: s.x, z: s.z });
-    if (this.posHistory.length > 15) this.posHistory.shift();
-    if (this.posHistory.length === 15 && this.mode !== 'ENGAGE') {
-      const a = this.posHistory[0];
-      if (Math.hypot(s.x - a.x, s.z - a.z) < 0.5) {
-        this.stuckEvents++;
-        this.room.botStuckEvents++;
-        const cur = nearestNode(s.x, s.y, s.z);
-        const adj = WAYPOINTS[cur].adj;
-        if (adj.length) this.goal = adj[Math.floor(this.rng() * adj.length) % adj.length];
-        this.posHistory = [];
+    // Stuck recovery: < 0.5 m of movement across 3 s of PATHING thinks -> repath.
+    // ENGAGE stands still on purpose once HOLDING — drop its history then so
+    // leaving an engagement doesn't instantly read as stuck; the approach leg to
+    // the claimed node stays covered, and a wedge there falls back to standing.
+    const engageHolding = this.mode === 'ENGAGE' && (this.claimedNode < 0
+      || dist3(s.x, s.y, s.z, WAYPOINTS[this.claimedNode].x, WAYPOINTS[this.claimedNode].y,
+        WAYPOINTS[this.claimedNode].z) <= 2.5);
+    if (engageHolding) {
+      this.posHistory = [];
+    } else {
+      this.posHistory.push({ x: s.x, z: s.z });
+      if (this.posHistory.length > 15) this.posHistory.shift();
+      if (this.posHistory.length === 15) {
+        const a = this.posHistory[0];
+        // "Moved < 0.5 m over 3 s" means EVERY sample stayed by the anchor —
+        // comparing only newest-vs-oldest false-positives on an ENGAGE<->
+        // INVESTIGATE ping-pong that re-walks the same stair at full speed and
+        // happens to land back where it was 3 s ago.
+        if (this.posHistory.every((q) => Math.hypot(q.x - a.x, q.z - a.z) < 0.5)) {
+          this.stuckEvents++;
+          this.room.botStuckEvents++;
+          if (this.mode === 'ENGAGE') this.releaseNode();   // stand-and-aim fallback
+          else this.startEscape(now);
+          this.posHistory = [];
+        }
       }
     }
 
     const target = this.perceive(combatants);
     if (target) {
       this.lastSeen = { x: target.state.x, y: target.state.y, z: target.state.z, at: now, id: target.id };
-      if (this.mode !== 'ENGAGE') this.enterEngage(target);
+      // HARD RULE (§5.2): a RELOCATE in progress is never cancelled by a visible
+      // target — the bot travels, then re-engages from the new position.
+      if (this.mode !== 'ENGAGE' && this.mode !== 'RELOCATE') this.enterEngage(target);
       this.targetId = target.id;
     } else if (this.mode === 'ENGAGE') {
       if (!this.lastSeen || now - this.lastSeen.at > 4000) {
@@ -222,13 +316,14 @@ export class BotController {
     this.reactionAt = this.room.now + this.tier.reactionMs + (this.rng() * 2 - 1) * jitter;
     this.errDeg = Math.abs(this.gauss()) * this.tier.sigma0Deg + this.tier.errFloorDeg;
     this.errDir = this.rng() * Math.PI * 2;
-    // Hold at the nearest unoccupied node within 25 m (cover-adjacent stop).
+    // Hold at the nearest unoccupied node within 25 m (cover-adjacent stop) —
+    // only one we can walk STRAIGHT at, since the approach leg steers blind.
     let best = -1, bestD = Infinity;
     for (let i = 0; i < N; i++) {
       if (this.room.nodeOccupancy.has(i)) continue;
       const w = WAYPOINTS[i];
       const d = dist3(s.x, s.y, s.z, w.x, w.y, w.z);
-      if (d < 25 && d < bestD) { bestD = d; best = i; }
+      if (d < 25 && d < bestD && this.clearWalk(s.x, s.y, s.z, w.x, w.y, w.z)) { bestD = d; best = i; }
     }
     if (best >= 0) {
       this.goal = best;
@@ -240,6 +335,30 @@ export class BotController {
 
   thinkEngage(target) {
     const s = this.p.state;
+    // Approach leg: actually WALK to the claimed cover node (unscoped, no error
+    // decay — settling starts on arrival, so the tier settle-time tell survives).
+    if (this.claimedNode >= 0) {
+      const w = WAYPOINTS[this.claimedNode];
+      if (dist3(s.x, s.y, s.z, w.x, w.y, w.z) > 2.5) {
+        // Re-validate the line from the CURRENT position each think: the approach
+        // steers blind and the turn-rate-capped curve can drift off a ramp lane,
+        // putting an unclimbable face between bot and node (the trench wall beside
+        // an exit ramp). Release and fight from here instead of pressing into the
+        // wall until the stuck detector fires.
+        if (!this.clearWalk(s.x, s.y, s.z, w.x, w.y, w.z)) {
+          this.releaseNode();
+        } else {
+          const dx = w.x - s.x, dz = w.z - s.z;
+          this.desiredYaw = Math.atan2(-dx, -dz);
+          this.desiredPitch = 0;
+          this.moveBits = BTN.FWD;
+          this.jumpWanted = (w.y - s.y) > 0.5 && (w.y - s.y) < 1.5 && Math.hypot(dx, dz) < 2.5;
+          this.wantScope = false;
+          this.wantBreath = false;
+          return;
+        }
+      }
+    }
     const t = target.state;
     // Wobble onto target: exponential error decay with a drifting direction.
     this.errDeg = Math.max(this.tier.errFloorDeg, this.errDeg * Math.exp(-0.2 / this.tier.tauSettleS));
@@ -256,6 +375,7 @@ export class BotController {
     this.desiredYaw = yaw;
     this.desiredPitch = pitch;
     this.moveBits = 0;
+    this.jumpWanted = false;         // never inherit a patrol step-up hop into a scoped hold
     this.wantScope = true;
     // Readable tell: breath held only when nearly settled (the final beat before firing).
     this.wantBreath = this.errDeg < this.tier.fireThreshDeg * 2;
@@ -269,42 +389,74 @@ export class BotController {
 
   thinkMove(now) {
     const s = this.p.state;
+    const cur = nearestNode(s.x, s.y, s.z);
+    const curW = WAYPOINTS[cur];
+    const atNode = dist3(s.x, s.y, s.z, curW.x, curW.y, curW.z) < 2.5;
     if (this.mode === 'INVESTIGATE') {
-      const arrived = this.investigatePoint
-        && dist3(s.x, s.y, s.z, this.investigatePoint.x, this.investigatePoint.y, this.investigatePoint.z) < 4;
+      const arrived = (this.investigatePoint
+        && dist3(s.x, s.y, s.z, this.investigatePoint.x, this.investigatePoint.y, this.investigatePoint.z) < 4)
+        || (atNode && cur === this.goal);   // reaching the origin's node counts
       if (arrived || now - this.investigateSince > 8000 || !this.investigatePoint) {
         this.mode = 'PATROL';
         this.goal = this.pickPatrolGoal();
         this.investigatePoint = null;
       }
     }
-    const cur = nearestNode(s.x, s.y, s.z);
-    const curW = WAYPOINTS[cur];
-    let stepTo = this.goal;
-    if (dist3(s.x, s.y, s.z, curW.x, curW.y, curW.z) < 2.5) {
-      if (cur === this.goal) {
-        if (this.mode === 'RELOCATE' || this.mode === 'PATROL') {
-          this.mode = 'PATROL';
-          this.goal = this.pickPatrolGoal();
-        }
-        stepTo = this.goal;
-      }
-      const hop = nextHop(cur, stepTo);
-      stepTo = hop >= 0 ? hop : cur;
+    let target;
+    const escaping = now < this.escapeUntil && this.escapeTarget;
+    if (escaping) {
+      // Stuck recovery in progress: walk straight at the open spot, then re-route.
+      target = this.escapeTarget;
+      this.stepNode = -1;
     } else {
-      // Off-graph (spawn/fall): head to the nearest node first.
-      stepTo = cur;
+      if (atNode && cur === this.goal && (this.mode === 'RELOCATE' || this.mode === 'PATROL')) {
+        this.mode = 'PATROL';
+        this.goal = this.pickPatrolGoal();
+      }
+      // Commit to ONE hop at a time and walk it out: re-route only on arrival at
+      // the step node, when the goal changed, or when the leg stops making
+      // progress (e.g. the step node ended up overhead after a fall) —
+      // re-anchoring to the nearest node every think yo-yos the bot around it
+      // and it never crosses a long edge.
+      const step = this.stepNode >= 0 ? WAYPOINTS[this.stepNode] : null;
+      if (!step || this.stepGoal !== this.goal || this.legStaleThinks >= 10
+          || dist3(s.x, s.y, s.z, step.x, step.y, step.z) < 2.5) {
+        const hop = nextHop(cur, this.goal);
+        let next = hop >= 0 ? hop : cur;
+        // Off the node when routing: only skip straight to the next hop if the
+        // line is provably open — otherwise walk to a REACHABLE anchor node
+        // first (cutting the corner is how bots wedge into the trench wall
+        // beside a ramp, and the plain nearest node can itself sit behind a
+        // staircase).
+        if (!atNode) {
+          const hw = WAYPOINTS[next];
+          if (next === cur || !this.clearWalk(s.x, s.y, s.z, hw.x, hw.y, hw.z)) {
+            next = this.anchorNode(s.x, s.y, s.z, cur);
+          }
+        }
+        this.stepNode = next;
+        this.stepGoal = this.goal;
+        this.legBestD = Infinity;
+        this.legStaleThinks = 0;
+      }
+      target = WAYPOINTS[this.stepNode];
+      const legD = dist3(s.x, s.y, s.z, target.x, target.y, target.z);
+      if (legD < this.legBestD - 0.25) { this.legBestD = legD; this.legStaleThinks = 0; }
+      else this.legStaleThinks++;
     }
-    const w = WAYPOINTS[stepTo];
-    const dx = w.x - s.x, dz = w.z - s.z;
+    const dx = target.x - s.x, dz = target.z - s.z;
     this.desiredYaw = Math.atan2(-dx, -dz);
-    // Patrol scan: sweep the eyes +-60 degrees while walking.
-    if (this.mode === 'PATROL') {
+    // Patrol scan: sweep the eyes +-60 degrees while walking — but never on a
+    // climb leg (stairs/ramps are narrow; weaving walks the bot off the side)
+    // or while beelining out of a wedge.
+    if (this.mode === 'PATROL' && Math.abs(target.y - s.y) < 0.5 && !escaping) {
       this.desiredYaw += Math.sin(now / 1000 * 0.5 * Math.PI * 2 + this.patrolPhase) * 60 * DEG;
     }
     this.desiredPitch = 0;
     this.moveBits = BTN.FWD;
-    this.jumpWanted = (w.y - s.y) > 0.5 && (w.y - s.y) < 1.5 && Math.hypot(dx, dz) < 2.5;
+    this.jumpWanted = ((target.y - s.y) > 0.5 && (target.y - s.y) < 1.5 && Math.hypot(dx, dz) < 2.5)
+      // Escaping a wedge while pinned against geometry: hop to clear the lip.
+      || (now < this.escapeUntil && s.grounded && Math.abs(s.vx) + Math.abs(s.vz) < 0.5);
     this.wantScope = false;
     this.wantBreath = false;
   }
@@ -324,6 +476,7 @@ export class BotController {
     // Turn-rate-capped tracking: bots visibly track, never snap.
     const maxTurn = this.tier.turnRateDegS * DEG * TICK_DT;
     let dYaw = normalizeAngle(this.desiredYaw - this.yaw);
+    const headingErr = Math.abs(dYaw);
     dYaw = Math.max(-maxTurn, Math.min(maxTurn, dYaw));
     this.yaw = normalizeAngle(this.yaw + dYaw);
     let dPitch = this.desiredPitch - this.pitch;
@@ -331,6 +484,11 @@ export class BotController {
     this.pitch += dPitch;
 
     let b = this.moveBits;
+    // Face before walking: forward motion is applied along the CURRENT yaw, so
+    // walking through a large turn-rate-capped correction sweeps a blind arc —
+    // which is exactly how bots wander off a road edge into the trench corner
+    // and wedge. Stand and turn first; 60 degrees still makes forward progress.
+    if (headingErr > 1.05) b &= ~BTN.FWD;
     if (this.jumpWanted) b |= BTN.JUMP;
     if (this.wantScope) b |= BTN.SCOPE;
     if (this.wantBreath) b |= BTN.BREATH;
