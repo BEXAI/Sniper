@@ -4,6 +4,11 @@ import * as THREE from '/vendor/three.module.js';
 import { BOXES } from '/shared/map.js';
 import { FOV_DEG, HEAD_Y, HEAD_RADIUS } from '/shared/constants.js';
 
+// Touch devices: drop antialias and cap pixelRatio at 1.75 — fill-rate on
+// mobile GPUs (iPhone) can't afford 2x MSAA'd rendering. Desktop unchanged.
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches ||
+  new URLSearchParams(location.search).get('touch') === '1';
+
 function noiseTexture(base, speck, density = 900, size = 256) {
   const c = document.createElement('canvas');
   c.width = c.height = size;
@@ -47,8 +52,8 @@ function hashHue(id) {
 
 export class GameScene {
   constructor(canvas) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: !IS_TOUCH });
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? 1.75 : 2));
     this.scene = new THREE.Scene();
     // Matches the sky-shader horizon color; 0.0045 keeps ~47% transmittance at the
     // 170 m signature sightlines so far silhouettes stay readable.

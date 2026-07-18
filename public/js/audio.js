@@ -8,6 +8,7 @@ export class GameAudio {
     this.muffle = null;
     this.volume = 0.7;
     this.heartbeatTimer = null;
+    this.ambienceStarted = false;
   }
 
   ensure() {
@@ -29,7 +30,15 @@ export class GameAudio {
     this.muffle.connect(this.master);
     this.master.connect(comp);
     comp.connect(this.ctx.destination);
+    // iOS WebKit creates contexts suspended even inside a user gesture.
+    if (this.ctx.state === 'suspended') this.ctx.resume();
     this.startAmbience();
+  }
+
+  // For main to call on user gestures: iOS WebKit re-suspends the context on
+  // backgrounding/interruptions and only a gesture-driven resume() revives it.
+  resumeIfNeeded() {
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
   }
 
   setVolume(v) {
@@ -47,6 +56,8 @@ export class GameAudio {
 
   _out(pan = 0) {
     if (pan === 0) return this.muffle;
+    // StereoPannerNode is Safari 14.1+; older WebKit lacks it — fall back to mono.
+    if (typeof this.ctx.createStereoPanner !== 'function') return this.muffle;
     const p = this.ctx.createStereoPanner();
     p.pan.value = pan;
     p.connect(this.muffle);
@@ -54,6 +65,10 @@ export class GameAudio {
   }
 
   startAmbience() {
+    // Defense in depth: ensure() only calls this once (early-returns when
+    // this.ctx exists), but the loop + LFO + gust chain must never double-start.
+    if (this.ambienceStarted) return;
+    this.ambienceStarted = true;
     const src = this.ctx.createBufferSource();
     src.buffer = this._noiseBuffer(2);
     src.loop = true;

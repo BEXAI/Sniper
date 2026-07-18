@@ -5,6 +5,7 @@ import { Net } from './net.js';
 import { Prediction } from './prediction.js';
 import { Interp } from './interpolation.js';
 import { Input } from './input.js';
+import { TouchControls } from './touch.js';
 import { Scope } from './scope.js';
 import { Effects } from './effects.js';
 import { Hud, dedupeNames } from './hud.js';
@@ -23,11 +24,11 @@ const SPECTATE = qs.get('spectate') === '1';
 const FAKELAG = Number(qs.get('fakelag')) || 0;
 const JITTER = Number(qs.get('jitter')) || 0;
 
-// Touch devices: desktop-only interstitial (spectate still works with drag-look).
-if (matchMedia('(pointer: coarse)').matches && !SPECTATE) {
-  document.getElementById('touchGate').classList.remove('hidden');
-  document.getElementById('menu').classList.add('hidden');
-  throw new Error('desktop-only');
+// Touch devices get full touch gameplay ('?touch=1' lets desktop test that path).
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches || qs.get('touch') === '1';
+if (IS_TOUCH) {
+  document.getElementById('spawnHint').textContent =
+    "tap SCOPE to aim — hip fire won't hit past 20 m · hold BREATH to steady";
 }
 
 const canvas = document.getElementById('game');
@@ -77,6 +78,7 @@ const identity = (() => {
 let savedIdentity = identity;
 
 const input = new Input(canvas, () => (net ? net.serverTime() - INTERP_DELAY_MS : 0));
+const touch = new TouchControls(input, () => (net ? net.serverTime() - INTERP_DELAY_MS : 0));
 input.sensitivity = Number(localStorage.getItem('glintSens')) || 1;
 audio.volume = localStorage.getItem('glintVol') !== null ? Number(localStorage.getItem('glintVol')) : 0.7;
 
@@ -197,8 +199,12 @@ function onWelcome(w) {
     // welcome.pid is authoritative: a rejected token silently downgrades to a
     // fresh anonymous pid — the guest chip must show for that too (§4.1).
     hud.guest(!savedIdentity || w.pid !== savedIdentity.pid);
-    canvas.addEventListener('click', lockOnce);
-    input.lock();
+    if (IS_TOUCH) {
+      touch.enable();               // no pointer lock on touch — sticks drive Input
+    } else {
+      canvas.addEventListener('click', lockOnce);
+      input.lock();
+    }
   }
   hud.show(true);
 }
@@ -399,6 +405,7 @@ function onMatchEnd(m) {
 }
 
 function onNetError(e) {
+  touch.disable();
   if (e.code === 'NAME_INVALID') {
     intentionalClose = true;
     phase = 'menu';
@@ -424,6 +431,7 @@ function onNetError(e) {
 
 function onNetClose() {
   audio.setHeartbeat(false);
+  touch.disable();
   if (intentionalClose) { intentionalClose = false; return; }
   if (phase === 'menu') return;
   phase = 'connecting';
@@ -445,8 +453,14 @@ document.addEventListener('visibilitychange', () => {
     paused = false;
     acc = 0;
     if (net) net.syncBurst();
+    // iOS WebKit suspends the AudioContext on backgrounding and won't always
+    // resume it by itself — kick it back on when the tab returns.
+    if (audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume();
   }
 });
+
+// Audio unlock hardening: iOS requires a user gesture before audio can start.
+document.addEventListener('touchend', () => audio.ensure(), { once: true });
 
 // ---------------- Spectate free-cam (incl. one-finger drag on touch) ----------------
 let lastTouch = null;
@@ -612,8 +626,9 @@ function frame() {
   gs.updateViewmodel(dt, moveSpeed, scope.isScopedVisual() || phase === 'spectating' || !!deathCam);
 
   // Pointer-lock prompt: playing but mouse not captured -> tell them how to aim.
+  // Touch has no pointer lock — the prompt stays permanently hidden there.
   document.getElementById('lockPrompt').classList.toggle('hidden',
-    !(phase === 'playing' && document.pointerLockElement !== canvas && !deathCam));
+    !(!IS_TOUCH && phase === 'playing' && document.pointerLockElement !== canvas && !deathCam));
   // First-life scope hint: dismiss on first scope or after 8 s, then never again.
   if (hintShownAt && (pred.state.scoped || performance.now() - hintShownAt > 8000)) {
     document.getElementById('spawnHint').classList.add('hidden');
