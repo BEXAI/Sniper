@@ -1,0 +1,19 @@
+{
+  "name": "glint",
+  "version": "1.0.0",
+  "description": "GLINT — browser sniper PvP with lag-compensated hitscan (Node + ws + Three.js, no build step)",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node test/run.js",
+    "smoke": "node test/smoke.e2e.js",
+    "soak": "node test/soak.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "pg": "^8.12.0"
+  }
+}
