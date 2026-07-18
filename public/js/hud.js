@@ -33,11 +33,12 @@ export class Hud {
       connOverlay: $('connOverlay'), connMsg: $('connMsg'),
       menu: $('menu'), nameInput: $('nameInput'), nameError: $('nameError'),
       lbBody: $('lbBody'), lbEmpty: $('lbEmpty'), seasonBanner: $('seasonBanner'),
-      menuStatus: $('menuStatus'), scopeOverlay: $('scopeOverlay'),
+      menuStatus: $('menuStatus'), scopeOverlay: $('scopeOverlay'), medal: $('medal'),
     };
     this._hmTimer = null;
     this._toastTimer = null;
     this._rankTimer = null;
+    this._medalTimer = null;
     this._compassPings = [];
     this._buildCompass();
   }
@@ -87,9 +88,15 @@ export class Hud {
     this.el.crosshair.style.display = scopedVisual ? 'none' : 'block';
   }
 
-  hitmarker(head) {
+  // kind: 'body' | 'head' | 'protect'. Legacy boolean callers still work
+  // (true == 'head', false == 'body').
+  hitmarker(kind) {
+    if (typeof kind === 'boolean') kind = kind ? 'head' : 'body';
     const el = this.el.hitmarker;
-    el.classList.toggle('head', !!head);
+    el.textContent = kind === 'protect' ? '◇' : '×';
+    el.classList.remove('show', 'head', 'protect');
+    void el.offsetWidth; // restart the head pop animation on rapid hits
+    if (kind !== 'body') el.classList.add(kind);
     el.classList.add('show');
     clearTimeout(this._hmTimer);
     this._hmTimer = setTimeout(() => el.classList.remove('show'), 120);
@@ -142,6 +149,17 @@ export class Hud {
     el.classList.remove('hidden');
     clearTimeout(this._rankTimer);
     this._rankTimer = setTimeout(() => el.classList.add('hidden'), 3500);
+  }
+
+  // Large center-screen callout (LONGSHOT, COLLATERAL, …); auto-hides after ~2 s.
+  medal(text) {
+    const el = this.el.medal;
+    el.textContent = text;
+    el.classList.add('hidden');
+    void el.offsetWidth; // restart the pop-in when medals chain back-to-back
+    el.classList.remove('hidden');
+    clearTimeout(this._medalTimer);
+    this._medalTimer = setTimeout(() => el.classList.add('hidden'), 2000);
   }
 
   scoreboard(visible, rows, myId) {

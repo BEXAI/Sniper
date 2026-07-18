@@ -66,6 +66,9 @@ let prevReloadMs = 0;
 let recoilPitch = 0;                          // 1.2 deg camera kick, 300 ms recovery
 let myDeaths = 0;
 let hintShownAt = 0;
+let killedMeBy = new Map();       // killerPid -> kills on me this round (REVENGE/NEMESIS)
+let finalMinuteShown = false;      // one 'FINAL MINUTE' callout per round
+let lastCountdownSec = 0;          // dedupes the last-5s ticks to one per second
 const spectateCam = { x: 0, y: 26, z: 46, yaw: 0, pitch: -0.4 };
 
 const identity = (() => {
@@ -163,6 +166,7 @@ function onWelcome(w) {
   acc = 0;
   deathCam = null;
   effects.clearDeathBeam();
+  resetRoundTrackers();
   roster = new Map(w.roster.map((r) => [r.id, { name: r.name, rank: r.rank }]));
   scoreRows = new Map(w.roster.map((r) => [r.id, { k: r.k, d: r.d, streak: r.streak, ping: r.ping }]));
   myPid = w.pid;
@@ -237,13 +241,22 @@ function segmentDistToCamera(o, end) {
   return { dist: closest.distanceTo(p), closest };
 }
 
+// Per-round medal state: cleared when a new match goes LIVE and on (re)welcome.
+function resetRoundTrackers() {
+  killedMeBy.clear();
+  finalMinuteShown = false;
+  lastCountdownSec = 0;
+}
+
 function handleEvent(ev, t) {
   switch (ev.e) {
     case 'shot': {
       recentShots.set(ev.id, ev);
       if (recentShots.size > 60) recentShots.delete(recentShots.keys().next().value);
       effects.tracer(ev.o, ev.end);
-      effects.impact(ev.end, ev.hit ? (ev.part === 'head' ? 'head' : 'flesh') : 'dust');
+      // Spawn-protected hits land as harmless dust, not flesh.
+      effects.impact(ev.end,
+        ev.hit && ev.part !== 'protect' ? (ev.part === 'head' ? 'head' : 'flesh') : 'dust');
       const cam = gs.camera.position;
       const d = Math.hypot(ev.o[0] - cam.x, ev.o[1] - cam.y, ev.o[2] - cam.z);
       if (ev.by === myPid) {
@@ -265,8 +278,12 @@ function handleEvent(ev, t) {
         }
       }
       if (ev.by === myPid && ev.hit) {
-        hud.hitmarker(ev.part === 'head');
-        if (ev.part === 'head') audio.headshot(); else audio.hitmark();
+        if (ev.part === 'protect') {
+          hud.hitmarker('protect');     // zero damage — no hit/headshot audio
+        } else {
+          hud.hitmarker(ev.part === 'head' ? 'head' : 'body');
+          if (ev.part === 'head') audio.headshot(); else audio.hitmark();
+        }
       }
       if (ev.hit === myPid) {
         hud.damageFrom(bearingTo(ev.o[0], ev.o[2]) - (-input.yaw * 180 / Math.PI));
@@ -288,16 +305,29 @@ function handleEvent(ev, t) {
         hs: ev.part === 'head', dist: ev.dist,
         meKiller: ev.by === myPid, meVictim: ev.victim === myPid,
       });
-      if (ev.by === myPid) { hud.streakToast(ev.streak); audio.killConfirm(); }
+      if (ev.by === myPid) {
+        hud.streakToast(ev.streak);
+        audio.killConfirm();
+        // One medal per kill, most personal first: REVENGE > long-range > streak.
+        let medal = null;
+        if ((killedMeBy.get(ev.victim) || 0) >= 2) medal = 'REVENGE';
+        else if (ev.dist >= 120) medal = `${ev.part === 'head' ? 'MARKSMAN' : 'LONGSHOT'} · ${Math.round(ev.dist)} m`;
+        else if (ev.streak === 5) medal = 'UNSTOPPABLE';
+        else if (ev.streak === 3) medal = 'KILL STREAK ×3';
+        if (medal) { hud.medal(medal); audio.medal(); }
+      }
       if (ev.victim === myPid) {
         myDeaths++;
+        const killsOnMe = (killedMeBy.get(ev.by) || 0) + 1;
+        killedMeBy.set(ev.by, killsOnMe);
         deathAt = performance.now();
         const shot = recentShots.get(ev.shotId);
         const kp = interp.sample(net.serverTime() - INTERP_DELAY_MS).get(ev.by);
         deathCam = {
           at: performance.now(),
           killerId: ev.by,
-          killerName: killer.name,
+          // 3rd+ death to the same player brands them on the death screen.
+          killerName: (killsOnMe >= 3 ? 'NEMESIS ' : '') + killer.name,
           killerHp: ev.killerHp,
           killerPos: kp ? { x: kp.x, y: kp.y, z: kp.z }
             : (shot ? { x: shot.o[0], y: shot.o[1] - EYE_HEIGHT, z: shot.o[2] } : null),
@@ -350,6 +380,7 @@ function handleEvent(ev, t) {
       break;
     case 'match':
       match = { state: ev.state, endsAt: ev.endsAt };
+      if (ev.state === 'LIVE') resetRoundTrackers();
       intermissionData = null;
       hud.intermission(null, 0);
       break;
@@ -448,6 +479,20 @@ function frame() {
   if (!net) { gs.render(); return; }
   net.frame();
   const serverNow = net.serverTime();
+
+  // Final-minute callout + last-5s countdown ticks (state lives in resetRoundTrackers).
+  if (net.hasSync && match.state === 'LIVE') {
+    const msLeft = match.endsAt - serverNow;
+    if (!finalMinuteShown && msLeft > 0 && msLeft < 60000) {
+      finalMinuteShown = true;
+      hud.medal('FINAL MINUTE');
+      audio.finalMinute();
+    }
+    if (msLeft > 0 && msLeft <= 5000) {
+      const sec = Math.ceil(msLeft / 1000);
+      if (sec !== lastCountdownSec) { lastCountdownSec = sec; audio.countdownTick(); }
+    }
+  }
 
   // Fixed-step prediction + input send (30 Hz), hard-clamped accumulator.
   if ((phase === 'playing') && !paused && net.open && net.hasSync) {

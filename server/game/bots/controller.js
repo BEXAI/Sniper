@@ -69,6 +69,7 @@ export class BotController {
     this.claimedNode = -1;
     this.targetId = null;
     this.lastSeen = null;                     // {x,y,z,at}
+    this.targetVisibleAt = 0;                 // room.now of the last think the CURRENT target was visible
     this.investigatePoint = null;
     this.investigateSince = 0;
     this.desiredYaw = 0;
@@ -194,6 +195,7 @@ export class BotController {
     this.mode = 'PATROL';
     this.goal = this.pickPatrolGoal();
     this.targetId = null;
+    this.targetVisibleAt = 0;
     this.firstShot = true;
     this.shotsFromPos = 0;
     this.lastShotPos = null;
@@ -285,10 +287,19 @@ export class BotController {
     const target = this.perceive(combatants);
     if (target) {
       this.lastSeen = { x: target.state.x, y: target.state.y, z: target.state.z, at: now, id: target.id };
+      // Re-peek re-arm: a target that broke LOS for a beat re-appears against a
+      // STALE settled aim — restore at least half the entry error and half the
+      // reaction delay so the re-acquire reads human (no instant floor-error shot).
+      if (this.mode === 'ENGAGE' && target.id === this.targetId
+          && this.targetVisibleAt > 0 && now - this.targetVisibleAt > 600) {
+        this.errDeg = Math.max(this.errDeg, 0.5 * this.tier.sigma0Deg);
+        this.reactionAt = Math.max(this.reactionAt, now + 0.5 * this.tier.reactionMs);
+      }
       // HARD RULE (§5.2): a RELOCATE in progress is never cancelled by a visible
       // target — the bot travels, then re-engages from the new position.
       if (this.mode !== 'ENGAGE' && this.mode !== 'RELOCATE') this.enterEngage(target);
       this.targetId = target.id;
+      this.targetVisibleAt = now;
     } else if (this.mode === 'ENGAGE') {
       if (!this.lastSeen || now - this.lastSeen.at > 4000) {
         this.releaseNode();
@@ -496,20 +507,25 @@ export class BotController {
     const input = { seq: ++this.seq, b, yaw: this.yaw, pitch: this.pitch };
     if (this.pendingFire && this.mode === 'ENGAGE') {
       this.pendingFire = false;
+      const s = this.p.state;
       let fy = this.yaw, fp = this.pitch;
       if (this.firstShot) {
-        // Guaranteed ranging miss: fixed 1.2 degree offset in a random direction on
-        // top of current error — no tier can land the first shot of an engagement.
+        // Guaranteed ranging miss: random-direction offset of at least 1.2 degrees,
+        // widened at close range so the shot stays >= ~1.5 m off the target even in
+        // trench fights — no tier can land the first shot of an engagement.
+        const d = this.lastSeen
+          ? dist3(s.x, s.y, s.z, this.lastSeen.x, this.lastSeen.y, this.lastSeen.z)
+          : Infinity;
+        const off = Math.max(1.2 * DEG, Math.atan2(1.5, d));
         const phi = this.rng() * Math.PI * 2;
-        fy += 1.2 * DEG * Math.cos(phi);
-        fp += 1.2 * DEG * Math.sin(phi);
+        fy += off * Math.cos(phi);
+        fp += off * Math.sin(phi);
         this.firstShot = false;
       }
       input.yaw = fy; input.pitch = fp;
       input.b |= BTN.FIRE;
       input.fire = { tt: this.room.serverNow() };
       // Mandatory relocate after 2 shots from within 2 m of the same position.
-      const s = this.p.state;
       if (this.lastShotPos && Math.hypot(s.x - this.lastShotPos.x, s.z - this.lastShotPos.z) < 2) {
         this.shotsFromPos++;
       } else {

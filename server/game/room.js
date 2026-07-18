@@ -217,13 +217,16 @@ export class Room {
       if (shooter.protectUntil > this.now) shooter.protectUntil = this.now;
       if (!shooter.isBot) this.store.addDeltas(shooter.id, { shotsFired: 1 });
 
-      const victims = this.combatants.filter((v) =>
-        v !== shooter && v.alive() && v.protectUntil <= this.now);
+      // Spawn-protected players still block the ray — shooting through a fresh
+      // spawn would read as a ghost. A hit on one is feedback-only: the shot
+      // event says part:'protect' and the damage/kill path below is skipped.
+      const victims = this.combatants.filter((v) => v !== shooter && v.alive());
       const res = resolveFire(shooter, fire, victims, this.now, BOXES, this.rng);
+      const protectedHit = !!res.hit && res.hit.protectUntil > this.now;
       const shotEv = this.pushEvent({
         e: 'shot', by: shooter.id,
         o: res.origin.map(qp), end: res.end.map(qp),
-        hit: res.hit ? res.hit.id : null, part: res.part,
+        hit: res.hit ? res.hit.id : null, part: protectedHit ? 'protect' : res.part,
       });
       for (const b of this.bots()) {
         if (b.alive() && b !== shooter) b.botCtl.onShotEvent(res.origin);
@@ -231,9 +234,11 @@ export class Room {
       if (!res.hit) continue;
 
       const victim = res.hit;
+      if (!shooter.isBot) this.store.addDeltas(shooter.id, { shotsHit: 1 });
+      // Zero damage on a protected victim: no hp change, no kill, no bot flinch.
+      if (protectedHit) continue;
       const dmg = res.part === 'head' ? DMG_HEAD : DMG_BODY;
       victim.hp -= dmg;
-      if (!shooter.isBot) this.store.addDeltas(shooter.id, { shotsHit: 1 });
 
       if (victim.hp > 0) {
         if (victim.isBot) victim.botCtl.onDamaged();

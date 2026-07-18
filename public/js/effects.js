@@ -18,6 +18,25 @@ function glintTexture() {
   return new THREE.CanvasTexture(c);
 }
 
+// Colder white-blue variant for scope glints — reads as glass, not muzzle fire.
+function coldGlintTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 2, 32, 32, 30);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.3, 'rgba(214,232,255,0.9)');
+  grad.addColorStop(1, 'rgba(150,190,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+
+// Shared unit primitives for tracer/beam bodies — oriented and stretched per
+// use via position/quaternion/scale, never disposed (module lifetime).
+const UP = new THREE.Vector3(0, 1, 0);
+const unitCyl = new THREE.CylinderGeometry(0.5, 0.5, 1, 6, 1, true);
+
 function outlineTexture() {
   const c = document.createElement('canvas');
   c.width = 64; c.height = 128;
@@ -39,29 +58,44 @@ export class Effects {
     this.live = [];                            // animated items
     this.glints = new Map();
     this.glintTex = glintTexture();
+    this.coldGlintTex = coldGlintTexture();
     this.outlineTex = outlineTexture();
     this.lastGlintCheck = 0;
   }
 
   // Tracer travels visually at 400 m/s along the TRUE server ray, then a smoke
-  // trail lingers 500 ms.
+  // trail lingers 500 ms. The bright head is a thin stretched additive cylinder
+  // (~6 cm) plus a glow sprite, fog off, so rounds still read at 150 m.
   tracer(o, end) {
     const from = new THREE.Vector3(...o);
     const to = new THREE.Vector3(...end);
     const dist = from.distanceTo(to);
     const dur = dist / TRACER_SPEED;
+    const dir = to.clone().sub(from).normalize();
 
-    const smokeGeo = new THREE.BufferGeometry().setFromPoints([from, to]);
+    // Smoke line revealed progressively behind the moving head, not full-span.
+    const smokeGeo = new THREE.BufferGeometry().setFromPoints([from, from.clone()]);
     const smoke = new THREE.Line(smokeGeo, new THREE.LineBasicMaterial({
       color: 0xcbb89a, transparent: true, opacity: 0.4,
     }));
     this.scene.add(smoke);
 
-    const segGeo = new THREE.BufferGeometry().setFromPoints([from.clone(), from.clone()]);
-    const seg = new THREE.Line(segGeo, new THREE.LineBasicMaterial({
-      color: 0xffe3a0, transparent: true, opacity: 1,
+    const seg = new THREE.Mesh(unitCyl, new THREE.MeshBasicMaterial({
+      color: 0xffedc4, blending: THREE.AdditiveBlending, depthWrite: false,
+      transparent: true, opacity: 1, fog: false,
     }));
+    seg.quaternion.setFromUnitVectors(UP, dir);       // direction never changes
+    seg.position.copy(from);
+    seg.scale.set(0.06, 0.001, 0.06);
     this.scene.add(seg);
+
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: this.glintTex, blending: THREE.AdditiveBlending, depthWrite: false,
+      transparent: true, opacity: 0.9, fog: false,
+    }));
+    glow.position.copy(from);
+    glow.scale.setScalar(0.5);
+    this.scene.add(glow);
 
     this.live.push({
       t: 0,
@@ -70,12 +104,17 @@ export class Effects {
         const f = Math.min(1, item.t / Math.max(0.02, dur));
         const head = from.clone().lerp(to, f);
         const tail = from.clone().lerp(to, Math.max(0, f - 8 / Math.max(8, dist)));
-        seg.geometry.setFromPoints([tail, head]);
+        seg.position.copy(tail).add(head).multiplyScalar(0.5);
+        seg.scale.y = Math.max(0.001, tail.distanceTo(head));
+        glow.position.copy(head);
+        if (f >= 1) glow.visible = false;             // impact puff takes over
+        smoke.geometry.setFromPoints([from, head]);
         smoke.material.opacity = 0.4 * Math.max(0, 1 - item.t / 0.5);
         if (item.t > 0.15 + dur) { seg.visible = false; }
         if (item.t > 0.5 + dur) {
-          this.scene.remove(seg, smoke);
-          seg.geometry.dispose(); smoke.geometry.dispose();
+          this.scene.remove(seg, glow, smoke);
+          seg.material.dispose(); glow.material.dispose();   // unitCyl is shared
+          smoke.geometry.dispose(); smoke.material.dispose();
           return false;
         }
         return true;
@@ -83,21 +122,37 @@ export class Effects {
     });
   }
 
+  // Double sprite: bright core + larger soft halo. World size is clamped so the
+  // flash never covers more than ~40 px of screen height at point-blank range.
   muzzleFlash(pos) {
     if (!pos) return;
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({
+    const dist = Math.max(0.5, pos.distanceTo(this.gs.camera.position));
+    const worldPerPx = 2 * Math.tan((this.gs.camera.fov / 2) * Math.PI / 180) * dist / innerHeight;
+    const k = Math.min(1, (worldPerPx * 40) / 1.6);   // 1.6 m halo is the largest
+    const core = new THREE.Sprite(new THREE.SpriteMaterial({
       map: this.glintTex, blending: THREE.AdditiveBlending, depthWrite: false,
       transparent: true, opacity: 1,
     }));
-    s.position.copy(pos);
-    s.scale.set(0.8, 0.8, 1);
-    this.scene.add(s);
+    core.position.copy(pos);
+    core.scale.setScalar(0.7 * k);
+    const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: this.glintTex, color: 0xffb35c, blending: THREE.AdditiveBlending,
+      depthWrite: false, transparent: true, opacity: 0.5,
+    }));
+    halo.position.copy(pos);
+    halo.scale.setScalar(1.6 * k);
+    this.scene.add(core, halo);
     this.live.push({
       t: 0,
       update: (item, dt) => {
         item.t += dt;
-        s.material.opacity = 1 - item.t / 0.07;
-        if (item.t > 0.07) { this.scene.remove(s); s.material.dispose(); return false; }
+        core.material.opacity = Math.max(0, 1 - item.t / 0.07);
+        halo.material.opacity = 0.5 * Math.max(0, 1 - item.t / 0.11);
+        if (item.t > 0.11) {
+          this.scene.remove(core, halo);
+          core.material.dispose(); halo.material.dispose();
+          return false;
+        }
         return true;
       },
     });
@@ -127,6 +182,8 @@ export class Effects {
     });
   }
 
+  // Core line + a slightly thicker additive glow pass, both pulsing at ~2.5 Hz
+  // (opacity 0.5..1.0) until clearDeathBeam().
   deathBeam(o, end) {
     const from = new THREE.Vector3(...o);
     const to = new THREE.Vector3(...end);
@@ -135,12 +192,40 @@ export class Effects {
       color: 0xff3a2a, transparent: true, opacity: 0.9, depthTest: false,
     }));
     line.renderOrder = 999;
-    this.scene.add(line);
-    this.beam = line;
+    const glow = new THREE.Mesh(unitCyl, new THREE.MeshBasicMaterial({
+      color: 0xff5a3a, blending: THREE.AdditiveBlending, depthWrite: false,
+      transparent: true, opacity: 0.35, depthTest: false, fog: false,
+    }));
+    glow.position.copy(from).add(to).multiplyScalar(0.5);
+    glow.quaternion.setFromUnitVectors(UP, to.clone().sub(from).normalize());
+    glow.scale.set(0.1, from.distanceTo(to), 0.1);
+    glow.renderOrder = 998;
+    const group = new THREE.Group();
+    group.add(line, glow);
+    this.scene.add(group);
+    this.beam = group;
+    this.beamLine = line;
+    this.beamGlow = glow;
+    this.live.push({
+      t: 0,
+      update: (item, dt) => {
+        if (this.beam !== group) return false;       // cleared by clearDeathBeam()
+        item.t += dt;
+        const pulse = 0.75 + 0.25 * Math.sin(item.t * Math.PI * 5);   // 2.5 Hz
+        line.material.opacity = pulse;
+        glow.material.opacity = 0.35 * pulse;
+        return true;
+      },
+    });
   }
 
   clearDeathBeam() {
-    if (this.beam) { this.scene.remove(this.beam); this.beam.geometry.dispose(); this.beam = null; }
+    if (this.beam) {
+      this.scene.remove(this.beam);
+      this.beamLine.geometry.dispose(); this.beamLine.material.dispose();
+      this.beamGlow.material.dispose();              // unitCyl is shared
+      this.beam = this.beamLine = this.beamGlow = null;
+    }
     if (this.outline) { this.scene.remove(this.outline); this.outline = null; }
   }
 
@@ -199,19 +284,21 @@ export class Effects {
       let g = this.glints.get(id);
       if (!g) {
         g = new THREE.Sprite(new THREE.SpriteMaterial({
-          map: this.glintTex, blending: THREE.AdditiveBlending, depthWrite: false,
+          map: this.coldGlintTex, blending: THREE.AdditiveBlending, depthWrite: false,
           transparent: true, opacity: 0.95,
         }));
+        g.userData.seed = Math.random() * 1600;      // desyncs twinkles per player
+        g.userData.base = 0.35;
         this.scene.add(g);
         this.glints.set(id, g);
       }
       g.visible = true;
       g.position.set(gx, gy, gz);
-      // Distance-scaled but never below ~8 px of screen height — the floor is
-      // applied AFTER the pulse so the trough never dips under the guarantee.
+      // Distance-scaled but never below ~8 px of screen height — the per-frame
+      // twinkle in update() only multiplies UP from this floor, never below it.
       const worldPerPx = 2 * Math.tan((fovDeg / 2) * Math.PI / 180) * dist / canvasHeight;
-      const pulsed = Math.max(0.35, worldPerPx * 8) * (1 + Math.sin(nowMs / 90) * 0.15);
-      g.scale.setScalar(Math.max(worldPerPx * 8, 0.35, pulsed));
+      g.userData.base = Math.max(worldPerPx * 8, 0.35);
+      g.scale.setScalar(g.userData.base);
     }
     for (const [id, g] of this.glints) if (!seen.has(id)) g.visible = false;
   }
@@ -223,12 +310,24 @@ export class Effects {
 
   removeGlint(id) {
     const g = this.glints.get(id);
-    if (g) { this.scene.remove(g); this.glints.delete(id); }
+    if (g) { this.scene.remove(g); g.material.dispose(); this.glints.delete(id); }
   }
 
   update(dt) {
     for (let i = this.live.length - 1; i >= 0; i--) {
       if (!this.live[i].update(this.live[i], dt)) this.live.splice(i, 1);
+    }
+    // Glint twinkle runs per frame (not in the 5 Hz LOS pass) so the ~120 ms
+    // lens-catch spike every ~1.6 s is never skipped between checks.
+    const nowMs = performance.now();
+    for (const g of this.glints.values()) {
+      if (!g.visible) continue;
+      const tick = (nowMs + g.userData.seed) % 1600;
+      const spike = tick < 120 ? 1 + Math.sin((tick / 120) * Math.PI) : 1;   // up to 2x
+      const pulse = 1 + Math.sin((nowMs + g.userData.seed) / 90) * 0.15;
+      g.scale.setScalar(Math.max(g.userData.base, g.userData.base * pulse) * spike);
+      g.material.color.setScalar(spike);             // >1 brightens the additive pass
+      g.material.opacity = Math.min(1, 0.95 * spike);
     }
   }
 }

@@ -273,7 +273,7 @@ async function scopedShotAt(client, tx, ty, tz) {
     assert.ok(Math.hypot(p.x - spawnEv.x, p.z - spawnEv.z) < 0.05,
       `B drifted post-respawn: ${JSON.stringify(p)} vs spawn ${spawnEv.x},${spawnEv.z}`);
   }
-  await sleep(2200);                               // let spawn protection lapse
+  await sleep(3200);                               // let spawn protection lapse (2500 ms)
   const b = A.players.get(B.pid);
   const { shot } = await scopedShotAt(A, b.x, b.y + 1.62, b.z);
   assert.strictEqual(shot.part, 'head', 'head-center ray must be a HEADSHOT');

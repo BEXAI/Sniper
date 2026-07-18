@@ -41,7 +41,7 @@ export const BOLT_MS = 1500;
 export const BOLT_TOLERANCE_MS = 50;
 export const MAG_SIZE = 5;
 export const RELOAD_MS = 2500;
-export const SPAWN_PROTECT_MS = 1500;
+export const SPAWN_PROTECT_MS = 2500;
 export const SPAWN_MIN_DIST = 2;             // reject spawn with any player within 2 m
 export const DEATH_CAM_MS = 3000;
 

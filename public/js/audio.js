@@ -70,6 +70,31 @@ export class GameAudio {
     lfoG.gain.value = 0.012;
     lfo.connect(lfoG).connect(g.gain);
     lfo.start();
+    this._scheduleGust();
+  }
+
+  // Wind gusts: every 8-15 s a 2-3 s bandpassed swell so the dusk range
+  // breathes between fights. Quiet on purpose — texture, not signal.
+  _scheduleGust() {
+    setTimeout(() => { this._gust(); this._scheduleGust(); }, 8000 + Math.random() * 7000);
+  }
+
+  _gust() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const dur = 2 + Math.random();
+    const src = this.ctx.createBufferSource();
+    src.buffer = this._noiseBuffer(dur);
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.value = 300 + Math.random() * 500;
+    f.Q.value = 0.8;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.exponentialRampToValueAtTime(0.04, t + dur * 0.4);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(f).connect(g).connect(this._out((Math.random() * 2 - 1) * 0.6));
+    src.start(t);
   }
 
   // Own shot: noise burst -> lowpass sweep + 60 Hz thump + slap-back echo.
@@ -174,6 +199,54 @@ export class GameAudio {
       o.start(t + at); o.stop(t + at + dur + 0.02);
     }
   }
+
+  // Medal sting: a fifth up from killConfirm (C5 -> G5) so streak callouts
+  // read as reward, not as another kill.
+  medal() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    for (const [freq, at, dur] of [[523, 0, 0.09], [784, 0.1, 0.18]]) {
+      const o = this.ctx.createOscillator();
+      o.type = 'triangle';
+      o.frequency.value = freq;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.3, t + at);
+      g.gain.exponentialRampToValueAtTime(0.001, t + at + dur);
+      o.connect(g).connect(this.muffle);
+      o.start(t + at); o.stop(t + at + dur + 0.02);
+    }
+  }
+
+  // Final-minute accent: low 55->110 Hz saw swell under a soft noise wash —
+  // one dread note, then back to the ambience.
+  finalMinute() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(55, t);
+    o.frequency.exponentialRampToValueAtTime(110, t + 1.2);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.exponentialRampToValueAtTime(0.35, t + 1.0);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
+    o.connect(g).connect(this.muffle);
+    o.start(t); o.stop(t + 1.4);
+
+    const wash = this.ctx.createBufferSource();
+    wash.buffer = this._noiseBuffer(1.4);
+    const wf = this.ctx.createBiquadFilter();
+    wf.type = 'lowpass'; wf.frequency.value = 500;
+    const wg = this.ctx.createGain();
+    wg.gain.setValueAtTime(0.001, t);
+    wg.gain.exponentialRampToValueAtTime(0.08, t + 1.0);
+    wg.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
+    wash.connect(wf).connect(wg).connect(this.muffle);
+    wash.start(t);
+  }
+
+  // Dry tick for the last-5-seconds countdown.
+  countdownTick() { this._blip(1500, 0.03, 0.25, 'square'); }
 
   bolt() {
     this._blip(320, 0.04, 0.2, 'square');
